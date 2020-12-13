@@ -3,6 +3,7 @@ import time
 import numpy as np
 from numpy import matlib
 import tensorflow as tf
+from tqdm import tqdm
 
 from sklearn.cluster import KMeans
 import scipy
@@ -46,7 +47,72 @@ class USPEC:
 		tf.matmul(A, B, transpose_b=True) + 
 		tf.reduce_sum(tf.square(B), axis=1) +
 		tf.expand_dims(tf.reduce_sum(tf.square(A), axis=1), axis=1))
-			
+	
+	def __sparse_matmul(self, A, B):
+		if A.get_shape().as_list()[1] != B.get_shape().as_list()[0]:
+			return None
+		
+		dense_shape = [A.get_shape().as_list()[0], B.get_shape().as_list()[1]]
+
+		Aux_A = tf.concat([tf.cast(A.indices, dtype=A.values.dtype), tf.expand_dims(A.values, axis=1)], axis=1)
+		Aux_B = tf.sparse.transpose(B)
+		Aux_B = tf.concat([tf.cast(Aux_B.indices, dtype=Aux_B.values.dtype), tf.expand_dims(Aux_B.values, axis=1)], axis=1)
+		new_idx = []
+		new_values = []
+
+		a = tf.cast(Aux_A[:, 0], dtype=tf.int64)
+		b = tf.cast(Aux_B[:, 0], dtype=tf.int64)
+		if tf.rank(a) == 1:
+			a = tf.expand_dims(a, axis=0)
+		if tf.rank(b) == 1:
+			b = tf.expand_dims(b, axis=0)
+
+		intersec_r = tf.cast(tf.sets.intersection(a, b).values, dtype=tf.float32)
+
+		for i in tqdm(intersec_r):
+			r_idx_A = tf.gather(Aux_A, tf.squeeze(tf.where(Aux_A[:, 0] == i)))
+			# if r_idx_A.get_shape()[0] == 0:
+			# 	continue
+			if tf.rank(r_idx_A) == 1:
+				r_idx_A = tf.expand_dims(r_idx_A, axis=0)
+					
+			for j in intersec_r:
+				r_idx_B = tf.gather(Aux_B, tf.squeeze(tf.where(Aux_B[:, 0] == j))) 
+				# if r_idx_B.get_shape()[0] == 0:
+				# 	continue
+				if tf.rank(r_idx_B) == 1:
+					r_idx_B = tf.expand_dims(r_idx_B, axis=0)
+
+				a = tf.cast(r_idx_A[:, 1], dtype=tf.int64)
+				b = tf.cast(r_idx_B[:, 1], dtype=tf.int64)
+				if tf.rank(a) == 1:
+					a = tf.expand_dims(a, axis=0)
+				if tf.rank(b) == 1:
+					b = tf.expand_dims(b, axis=0)
+
+				intersec = tf.cast(tf.sets.intersection(a, b).values, dtype=tf.float32)
+				if intersec.get_shape()[0] == 0:
+					continue
+		
+				soma = tf.constant([], dtype=A.values.dtype)
+				for k in intersec:
+					temp_A = tf.gather(r_idx_A, tf.squeeze(tf.where(r_idx_A[:, 1] == k)))
+					temp_B = tf.gather(r_idx_B, tf.squeeze(tf.where(r_idx_B[:, 1] == k)))
+					if tf.rank(temp_A) == 1:
+						temp_A = tf.expand_dims(temp_A, axis=0)
+					if tf.rank(temp_B) == 1:
+						temp_B = tf.expand_dims(temp_B, axis=0)
+					soma = tf.concat([soma, temp_A[:,-1]*temp_B[:,-1]], axis=0)
+				
+				soma = tf.reduce_sum(soma)	
+
+				new_idx.append([i, j])
+				new_values.append(soma)
+
+		return tf.sparse.SparseTensor(tf.cast(new_idx, dtype=tf.int64), new_values, dense_shape)
+
+
+
 	def predict(self, Features, N_representations, N_clusters, Knn=10, cntTimes=10):
 		#Stage 1
 		print("Stage 1")
@@ -57,15 +123,12 @@ class USPEC:
 		N = Features.shape[0]
 
 		cntRepCls = int(np.floor(np.sqrt(RpData.cluster_centers_.shape[0])))
-		AprData = KMeans(n_clusters=cntRepCls, max_iter=600).fit(RpData.cluster_centers_)
+		AprData = KMeans(n_clusters=cntRepCls).fit(RpData.cluster_centers_)
 
 		cntRepCls = AprData.cluster_centers_.shape[0]
-
-		# centerDist = np.zeros((N, cntRepCls))
 		
 		Features = tf.constant(Features, dtype=tf.float32)
 		Apr_centers = tf.constant(AprData.cluster_centers_, dtype=tf.float32)
-		# centerDist = self.__dist_tf(Features, Apr_centers)
 		
 		minCenterIdxs = tf.math.argmin(self.__dist_tf(Features, Apr_centers), axis=1)
 
@@ -79,9 +142,8 @@ class USPEC:
 			originalIdxs = tf.where(minCenterIdxs == i)
 			aprDataIdxs = tf.where(Apr_labels == i)
 
-			# originalTemp = np.take(Features, originalIdxs).ravel()
 			originalTemp = tf.gather_nd(Features, originalIdxs)
-			# aprDataTemp = np.take(RpData.cluster_centers_, aprDataIdxs).ravel()
+
 			aprDataTemp = tf.gather_nd(RpData_centers, aprDataIdxs)
 
 			temp = self.__dist_tf(originalTemp, aprDataTemp)
@@ -117,8 +179,6 @@ class USPEC:
 		
 		del RpData, originalIdxs, originalTemp, RpFeatTemp, temp, Features, RpData_centers
 		
-		# RpFeaKnnIdxFull = RpFeaKnnIdx[nearestRepInRpFeaIdx,:]
-		
 		RpFeaKnnIdxFull = tf.gather(RpFeaKnnIdx, nearestRepInRpFeaIdx)
 
 		del RpFeaKnnIdx, nearestRepInRpFeaIdx
@@ -135,18 +195,11 @@ class USPEC:
 			idx_R = tf.concat([tf.expand_dims(idx_R, axis=1), col], axis=1)
 
 			knnDist = tf.tensor_scatter_nd_update(knnDist, idx_R, minV)
-			# knnDist [:, i] = minV
 
 			knnIdx = tf.tensor_scatter_nd_update(knnIdx, idx_R, RpFeaKnnIdxFull[:,i])
 			
 			temp = tf.where(temp<N, np.inf, RpFeaKnnDist[:,i])
 			RpFeaKnnDist = tf.tensor_scatter_nd_update(RpFeaKnnDist, idx_R, temp)
-			# for j in range(len(temp)):
-				
-			# 	knnIdx[j, i] = RpFeaKnnIdxFull[j, i]
-				
-			# 	if(temp[j] < N):
-			# 		RpFeaKnnDist[j, i] = np.inf
 		
 		del RpFeaKnnDist, RpFeaKnnIdxFull, idx, minV, idx_R, temp, col
 
@@ -158,49 +211,54 @@ class USPEC:
 
 		Gidx = tf.expand_dims(tf.reshape(tf.constant(matlib.repmat(np.arange(N), Knn, 1).T), shape=[N*Knn]), axis=1)
 		Gidx = tf.concat([Gidx, tf.expand_dims(tf.reshape(knnIdx,  shape=[N*Knn]), axis=1)], axis=1)
-		# B = self.__sparse(Gidx.ravel(), knnIdx.ravel(), Gsdx.ravel(), N, N_representations).toarray()
 		
 		B = tf.sparse.SparseTensor(tf.cast(Gidx, dtype=tf.int64), tf.reshape(Gsdx,  shape=[N*Knn]), [N, N_representations])
-		
+		B = tf.sparse.reorder(B)
+
 		del Gsdx, Gidx, knnIdx
 
+		print("Stage 3")
 		#Stage 3
 		dx = tf.sparse.reduce_sum(B, axis=1)
 		dx = 1/dx
 		dx = tf.where(tf.math.is_nan(dx), 0, dx)
 		idx = tf.expand_dims(tf.range(0, limit=N, dtype=tf.int64), axis=1) 
 		Dx = tf.sparse.SparseTensor(tf.concat([idx, idx], axis=1), dx, [N, N])
-		# Dx = np.zeros((N, N))
-		# np.fill_diagonal(Dx, dx)
 
 		del dx, idx
 
+		#Er = B.T @ Dx @ B
+		#Er.shape => [N_representation, N_representation] => 1000x1000
+		# Er = self.__sparse_matmul(self.__sparse_matmul(tf.sparse.transpose(B), Dx), B)
 		Er = tf.sparse.sparse_dense_matmul(tf.sparse.sparse_dense_matmul(tf.sparse.to_dense(tf.sparse.transpose(B)), Dx), B)
-		# tf.sparse.transpose(B) @ Dx @ B
-		# Er = B.T @ Dx @ B
+		
+
 
 		d = tf.math.reduce_sum(Er, axis=1)
 		d = 1/tf.math.sqrt(d)
 		idx = tf.expand_dims(tf.range(0, limit=N_representations, dtype=tf.int64), axis=1) 
 		D = tf.sparse.SparseTensor(tf.concat([idx, idx], axis=1), d, [N_representations, N_representations])
-		# D = np.zeros((N_representations, N_representations))
-		# np.fill_diagonal(D, d)
+		
 		del d, idx
 		
+		# Dr = self.__sparse_matmul(self.__sparse_matmul(D, Er), D)
 		Dr = tf.sparse.sparse_dense_matmul(tf.sparse.sparse_dense_matmul(D, Er), D)
+		# Dr = tf.sparse.to_dense(Dr)
 		Dr = (Dr + tf.transpose(Dr))/2
+
+		#Dr.shape => [N_representation, N_representation] => 1000x1000
 		aval, avec = tf.linalg.eig(Dr)
 
 		del Dr, Er
 
-		# idx = np.argsort(aval, kind='mergesort')[::-1]
 		idx = tf.argsort(tf.math.real(aval), direction='DESCENDING').numpy()[:N_clusters]
 		
 		avec = tf.gather(tf.math.real(avec), idx, axis=1)
 
 		Ncut_avec =	tf.sparse.sparse_dense_matmul(D, avec)
 
-		res =  tf.matmul(tf.sparse.sparse_dense_matmul(Dx, tf.sparse.to_dense(tf.sparse.reorder(B))), Ncut_avec)
+		# res =  tf.sparse.sparse_dense_matmul(self.__sparse_matmul(Dx, B), Ncut_avec)
+		res =  tf.matmul(tf.sparse.sparse_dense_matmul(Dx, tf.sparse.to_dense(B)), Ncut_avec)
 		
 		del Dx, idx, D, B, Ncut_avec, aval, avec
 
