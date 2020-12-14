@@ -111,6 +111,25 @@ class USPEC:
 
 		return tf.sparse.SparseTensor(tf.cast(new_idx, dtype=tf.int64), new_values, dense_shape)
 
+	def __sparse_diagonal_matmul(self, A, B):
+		if A.get_shape().as_list()[1] != B.get_shape().as_list()[0]:
+			return None
+		
+		dense_shape = [A.get_shape().as_list()[0], B.get_shape().as_list()[0]]
+
+		Aux_A = tf.concat([tf.cast(A.indices, dtype=A.values.dtype), tf.expand_dims(A.values, axis=1)], axis=1)
+		
+		new_idx = []
+		new_values = []
+
+		for i in tqdm(range(dense_shape[1])):
+			r_idx_A = tf.gather(Aux_A, tf.squeeze(tf.where(Aux_A[:, 1] == i)))
+			idx =  tf.where(Aux_A[:, 1] == i)
+			paddings = tf.constant([[0, int(A.indices.get_shape().as_list()[0]-r_idx_A.get_shape().as_list()[0])], [0, 0]])
+			Aux_A= tf.tensor_scatter_nd_update(Aux_A,  tf.where(Aux_A[:, 1] == i), r_idx_A*B[i])
+
+		return tf.sparse.SparseTensor(A.indices, Aux_A[:,2], dense_shape)
+
 
 
 	def predict(self, Features, N_representations, N_clusters, Knn=10, cntTimes=10):
@@ -225,12 +244,12 @@ class USPEC:
 		idx = tf.expand_dims(tf.range(0, limit=N, dtype=tf.int64), axis=1) 
 		Dx = tf.sparse.SparseTensor(tf.concat([idx, idx], axis=1), dx, [N, N])
 
-		del dx, idx
+		del idx
 
 		#Er = B.T @ Dx @ B
 		#Er.shape => [N_representation, N_representation] => 1000x1000
-		# Er = self.__sparse_matmul(self.__sparse_matmul(tf.sparse.transpose(B), Dx), B)
-		Er = tf.sparse.sparse_dense_matmul(tf.sparse.sparse_dense_matmul(tf.sparse.to_dense(tf.sparse.transpose(B)), Dx), B)
+		Er = tf.sparse.sparse_dense_matmul(self.__sparse_diagonal_matmul(tf.sparse.transpose(B), dx), tf.sparse.to_dense(B))
+		#Er = tf.sparse.sparse_dense_matmul(tf.sparse.sparse_dense_matmul(tf.sparse.to_dense(tf.sparse.transpose(B)), Dx), B)
 		
 
 
