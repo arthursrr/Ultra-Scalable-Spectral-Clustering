@@ -119,14 +119,10 @@ class USPEC:
 
 		Aux_A = tf.concat([tf.cast(A.indices, dtype=A.values.dtype), tf.expand_dims(A.values, axis=1)], axis=1)
 		
-		new_idx = []
-		new_values = []
-
 		for i in tqdm(range(dense_shape[1])):
-			r_idx_A = tf.gather(Aux_A, tf.squeeze(tf.where(Aux_A[:, 1] == i)))
-			idx =  tf.where(Aux_A[:, 1] == i)
-			paddings = tf.constant([[0, int(A.indices.get_shape().as_list()[0]-r_idx_A.get_shape().as_list()[0])], [0, 0]])
-			Aux_A= tf.tensor_scatter_nd_update(Aux_A,  tf.where(Aux_A[:, 1] == i), r_idx_A*B[i])
+			r_idx_A = tf.gather(Aux_A, tf.squeeze(tf.where(Aux_A[:, 1] == i))).numpy()
+			r_idx_A[:,2] = r_idx_A[:,2]*B[i]
+			Aux_A = tf.tensor_scatter_nd_update(Aux_A, tf.where(Aux_A[:, 1] == i), r_idx_A)
 
 		return tf.sparse.SparseTensor(A.indices, Aux_A[:,2], dense_shape)
 
