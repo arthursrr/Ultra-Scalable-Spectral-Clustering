@@ -118,11 +118,16 @@ class USPEC:
 		dense_shape = [A.get_shape().as_list()[0], B.get_shape().as_list()[0]]
 
 		Aux_A = tf.concat([tf.cast(A.indices, dtype=A.values.dtype), tf.expand_dims(A.values, axis=1)], axis=1)
-		
+		# result = None
 		for i in tqdm(range(dense_shape[1])):
-			r_idx_A = tf.gather(Aux_A, tf.squeeze(tf.where(Aux_A[:, 1] == i))).numpy()
+			idx = tf.where(Aux_A[:, 1] == i)
+			r_idx_A = tf.gather(Aux_A, tf.squeeze(idx)).numpy()
 			r_idx_A[:,2] = r_idx_A[:,2]*B[i]
-			Aux_A = tf.tensor_scatter_nd_update(Aux_A, tf.where(Aux_A[:, 1] == i), r_idx_A)
+			# if type(result).__name__ == 'NoneType':
+			# 	result = r_idx_A
+			# else:
+			# 	result = tf.concat([result, r_idx_A], axis=0)
+			Aux_A = tf.tensor_scatter_nd_update(Aux_A, idx, r_idx_A)
 
 		return tf.sparse.SparseTensor(A.indices, Aux_A[:,2], dense_shape)
 
@@ -229,7 +234,7 @@ class USPEC:
 		
 		B = tf.sparse.SparseTensor(tf.cast(Gidx, dtype=tf.int64), tf.reshape(Gsdx,  shape=[N*Knn]), [N, N_representations])
 		B = tf.sparse.reorder(B)
-
+		
 		del Gsdx, Gidx, knnIdx
 
 		print("Stage 3")
@@ -237,17 +242,27 @@ class USPEC:
 		dx = tf.sparse.reduce_sum(B, axis=1)
 		dx = 1/dx
 		dx = tf.where(tf.math.is_nan(dx), 0, dx)
+		
 		idx = tf.expand_dims(tf.range(0, limit=N, dtype=tf.int64), axis=1) 
 		Dx = tf.sparse.SparseTensor(tf.concat([idx, idx], axis=1), dx, [N, N])
 
 		del idx
 
+
 		#Er = B.T @ Dx @ B
 		#Er.shape => [N_representation, N_representation] => 1000x1000
-		Er = tf.sparse.sparse_dense_matmul(self.__sparse_diagonal_matmul(tf.sparse.transpose(B), dx), tf.sparse.to_dense(B))
-		#Er = tf.sparse.sparse_dense_matmul(tf.sparse.sparse_dense_matmul(tf.sparse.to_dense(tf.sparse.transpose(B)), Dx), B)
+		aux_v = matlib.repmat(dx.numpy(), Knn, 1).T.ravel()
+		aux_v = B.values * aux_v
+		aux = tf.sparse.SparseTensor(B.indices, aux_v, [N, N_representations])
 		
-
+		del aux_v
+		
+		aux = tf.sparse.transpose(aux)
+		B = tf.sparse.to_dense(B)
+		Er = tf.sparse.sparse_dense_matmul(aux, B)
+		# Er = tf.sparse.sparse_dense_matmul(tf.sparse.sparse_dense_matmul(tf.sparse.to_dense(tf.sparse.transpose(B)), Dx), B)
+		
+		del aux
 
 		d = tf.math.reduce_sum(Er, axis=1)
 		d = 1/tf.math.sqrt(d)
@@ -273,7 +288,7 @@ class USPEC:
 		Ncut_avec =	tf.sparse.sparse_dense_matmul(D, avec)
 
 		# res =  tf.sparse.sparse_dense_matmul(self.__sparse_matmul(Dx, B), Ncut_avec)
-		res =  tf.matmul(tf.sparse.sparse_dense_matmul(Dx, tf.sparse.to_dense(B)), Ncut_avec)
+		res =  tf.matmul(tf.sparse.sparse_dense_matmul(Dx, B), Ncut_avec)
 		
 		del Dx, idx, D, B, Ncut_avec, aval, avec
 
@@ -297,7 +312,7 @@ import matplotlib.pyplot as plt
 from sklearn.datasets import make_moons
 
 random_state = 21
-X_mn, y_mn = make_moons(100000, noise=.07, random_state=random_state)
+X_mn, _ = make_moons(1000000, noise=.07, random_state=random_state)
 print(X_mn.shape)
 cmap = 'viridis'
 dot_size=50
@@ -305,7 +320,7 @@ dot_size=50
 uspec=USPEC()
 
 print("Comecou")
-labels = uspec.predict(X_mn, 1000, 2)
+labels = uspec.predict(X_mn, 200, 2)
 print("Terminou")
 
 fig, ax = plt.subplots(figsize=(9,7))
